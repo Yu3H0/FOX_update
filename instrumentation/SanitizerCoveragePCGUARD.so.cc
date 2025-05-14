@@ -725,6 +725,23 @@ static bool shouldInstrumentBlock(const Function &F, const BasicBlock *BB,
 
 }
 
+static bool shouldInstrumentBlockOptfuzz(const Function &F, const BasicBlock *BB) {
+
+  // Don't insert coverage for blocks containing nothing but unreachable: we
+  // will never call __sanitizer_cov() for them, so counting them in
+  // NumberOfInstrumentedBlocks() might complicate calculation of code coverage
+  // percentage. Also, unreachable instructions frequently have no debug
+  // locations.
+  if (isa<UnreachableInst>(BB->getFirstNonPHIOrDbgOrLifetime())) return false;
+
+  // Don't insert coverage into blocks without a valid insertion point
+  // (catchswitch blocks).
+  if (BB->getFirstInsertionPt() == BB->end()) return false;
+
+  return true;
+
+}
+
 // Returns true iff From->To is a backedge.
 // A twist here is that we treat From->To as a backedge if
 //   * To dominates From or
@@ -890,6 +907,214 @@ void ModuleSanitizerCoverageAFL::instrumentFunction(
 
     */
 
+  }
+
+    // find mapping from sancov id to br_dist_edge_id
+  IsBlockInstrumented = false;
+  IsBlcokInstrumentedWithCMP = false;
+  for (auto &BB : F) {
+    IsBlockInstrumented = false;
+    IsBlcokInstrumentedWithCMP = false;
+    if (shouldInstrumentBlock(F, &BB, DT, PDT, Options)) {
+      IsBlockInstrumented = true;
+    }
+    
+    for (auto &Inst : BB) {
+      if (ICmpInst *CMP = dyn_cast<ICmpInst>(&Inst)) {
+        if (OptfuzzIsInterestingCmp(CMP, DT, Options, DL)) {  
+          int found_cmp_terminator = 0;
+          // 1. check CMP as branch condition
+          if (auto* br_inst = dyn_cast<BranchInst>(BB.getTerminator())) {
+            if (br_inst->isConditional()) {
+              if (CmpInst* cmp_inst = dyn_cast<CmpInst> (br_inst->getCondition())){
+                if (cmp_inst == CMP){
+                  found_cmp_terminator = 1;
+                  // if CMP is like CMP(strcmp(...), CONST), instrument strcmp instead of CMP
+                  Value *A0 = CMP->getOperand(0);
+                  Value *A1 = CMP->getOperand(1);
+                  
+                  bool FirstIsConst = isa<ConstantInt>(A0);
+                  bool SecondIsConst = isa<ConstantInt>(A1);
+                  bool instrumentStrcmp = 0;
+                  if (!FirstIsConst && SecondIsConst) {
+                    if (auto* callInst = dyn_cast<CallInst>(A0)){
+                      Function *Callee = callInst->getCalledFunction();
+                      if (!Callee) continue;
+                      if (callInst->getCallingConv() != llvm::CallingConv::C) continue;
+                      std::string tmp_name = Callee->getName().str();
+                      // skip instrument CMP
+                      if (funcName.find(tmp_name) != funcName.end()){
+                        instrumentStrcmp = 1;
+                        if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), &BB) == BlocksToInstrument.end()) {
+                          if (shouldInstrumentBlockOptfuzz(F, &BB)) {
+                            BlocksToInstrument.push_back(&BB);
+                          }
+                        }
+                         
+                        for (auto *Succ : successors(&BB)) {
+                          if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), Succ) == BlocksToInstrument.end()) {
+                            if (shouldInstrumentBlockOptfuzz(F, Succ)) {
+                              BlocksToInstrument.push_back(Succ);
+                            }
+                          }
+                        }
+                      }
+                    }    
+                  }
+                  // rare case
+                  else if (FirstIsConst && !SecondIsConst) {
+                    if (auto* callInst = dyn_cast<CallInst>(A1)){
+                      Function *Callee = callInst->getCalledFunction();
+                      if (!Callee) continue;
+                      if (callInst->getCallingConv() != llvm::CallingConv::C) continue;
+                      std::string tmp_name = Callee->getName().str();
+                      // skip instrument CMP for strcmp
+                      if (funcName.find(tmp_name) != funcName.end()){
+                        instrumentStrcmp = 1;
+                        if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), &BB) == BlocksToInstrument.end()) {
+                          if (shouldInstrumentBlockOptfuzz(F, &BB)) {
+                            BlocksToInstrument.push_back(&BB);
+                          }
+                        }
+                         
+                        for (auto *Succ : successors(&BB)) {
+                          if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), Succ) == BlocksToInstrument.end()) {
+                            if (shouldInstrumentBlockOptfuzz(F, Succ)) {
+                              BlocksToInstrument.push_back(Succ);
+                            }
+                          }
+                        }
+
+                      }
+                    }    
+                  }
+
+                  if (!instrumentStrcmp){
+                        if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), &BB) == BlocksToInstrument.end()) {
+                          BlocksToInstrument.push_back(&BB);
+                        }
+                         
+                        for (auto *Succ : successors(&BB)) {
+                          if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), Succ) == BlocksToInstrument.end()) {
+                            if (shouldInstrumentBlockOptfuzz(F, Succ)) {
+                              BlocksToInstrument.push_back(Succ);
+                            }
+                          }
+                        }
+                  }
+                }
+              }
+            }
+          } 
+          IsBlcokInstrumentedWithCMP = true;
+        }
+        // TODO: is this code block necessary? Double-check if we really need this.
+        else if (OptfuzzIsInterestingCmpPtr(CMP, DT, Options, DL)) {  
+          // 1. check CMP as branch condition
+          if (auto* br_inst = dyn_cast<BranchInst>(BB.getTerminator())) {
+            if (br_inst->isConditional()) {
+              if (CmpInst* cmp_inst = dyn_cast<CmpInst> (br_inst->getCondition())){
+                if (cmp_inst == CMP){
+                  // if CMP is like CMP(strcmp(...), CONST), instrument strcmp instead of CMP
+                  Value *A0 = CMP->getOperand(0);
+                  Value *A1 = CMP->getOperand(1);
+                  bool FirstIsConst = isa<ConstantPointerNull>(A0);
+                  bool SecondIsConst = isa<ConstantPointerNull>(A1);
+                  bool instrumentStrcmp = 0;
+                  if (!FirstIsConst && SecondIsConst) {
+                    if (auto* callInst = dyn_cast<CallInst>(A0)){
+                      Function *Callee = callInst->getCalledFunction();
+                      if (!Callee) continue;
+                      if (callInst->getCallingConv() != llvm::CallingConv::C) continue;
+                      std::string tmp_name = Callee->getName().str();
+                      // skip instrument CMP
+                      if (funcName.find(tmp_name) != funcName.end()){
+                        instrumentStrcmp = 1;
+                        if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), &BB) == BlocksToInstrument.end()) {
+                          if (shouldInstrumentBlockOptfuzz(F, &BB)) {
+                            BlocksToInstrument.push_back(&BB);
+                          }
+                        }
+                         
+                        for (auto *Succ : successors(&BB)) {
+                          if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), Succ) == BlocksToInstrument.end()) {
+                            if (shouldInstrumentBlockOptfuzz(F, Succ)) {
+                              BlocksToInstrument.push_back(Succ);
+                            }
+                          }
+                        }
+                      }
+                    }    
+                  }
+                  // rare case
+                  else if (FirstIsConst && !SecondIsConst) {
+                    if (auto* callInst = dyn_cast<CallInst>(A1)){
+                      Function *Callee = callInst->getCalledFunction();
+                      if (!Callee) continue;
+                      if (callInst->getCallingConv() != llvm::CallingConv::C) continue;
+                      std::string tmp_name = Callee->getName().str();
+                      // skip instrument CMP
+                      if (funcName.find(tmp_name) != funcName.end()){
+                        instrumentStrcmp = 1;
+                        if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), &BB) == BlocksToInstrument.end()) {
+                          if (shouldInstrumentBlockOptfuzz(F, &BB)) {
+                            BlocksToInstrument.push_back(&BB);
+                          }
+                        }
+                        for (auto *Succ : successors(&BB)) {
+                          if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), Succ) == BlocksToInstrument.end()) {
+                            if (shouldInstrumentBlockOptfuzz(F, Succ)) {
+                              BlocksToInstrument.push_back(Succ);
+                            }
+                          }
+                        }
+                      }
+                    }    
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (SwitchInst* SI = dyn_cast<SwitchInst>(&Inst)){
+        Value* op1 = SI->getCondition();
+        if (!op1->getType()->isIntegerTy()) continue;
+        //uint64_t TypeSize = DL->getTypeStoreSizeInBits(op1->getType());
+        unsigned TypeSize = (cast<IntegerType>(op1->getType()))->getBitWidth();
+        int      CallbackIdx = TypeSize == 8    ? 0
+                               : TypeSize == 16 ? 1
+                               : TypeSize == 32 ? 2
+                               : TypeSize == 64 ? 3
+                                                : -1;
+        if (CallbackIdx < 0) continue;
+        // find sancov id for sw  
+        if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), &BB) == BlocksToInstrument.end()) {
+          if (shouldInstrumentBlockOptfuzz(F, &BB)) {
+            BlocksToInstrument.push_back(&BB);
+          }
+        }
+        // find target sancov id for each case
+        for (auto i = SI->case_begin(), e = SI->case_end(); i != e;++i) {
+          ConstantInt* op2 = dyn_cast<ConstantInt>(i->getCaseValue());
+          BasicBlock* targetBB = i->getCaseSuccessor();
+          if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), &targetBB) == BlocksToInstrument.end()) {
+            if (shouldInstrumentBlockOptfuzz(F, &targetBB)) {
+              BlocksToInstrument.push_back(&targetBB);
+            }
+          }
+        }
+
+        // for default case
+        BasicBlock* defaultBB = SI->getDefaultDest();
+        if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), &defaultBB) == BlocksToInstrument.end()) {
+          if (shouldInstrumentBlockOptfuzz(F, &defaultBB)) {
+            BlocksToInstrument.push_back(&defaultBB);
+          }
+        } 
+      }  
+    }
   }
 
 
@@ -1205,7 +1430,9 @@ void ModuleSanitizerCoverageAFL::instrumentFunction(
           ConstantInt* op2 = dyn_cast<ConstantInt>(i->getCaseValue());
           tmp_val_list.push_back(op2->getSExtValue());
         }
-	if (tmp_val_list.empty()) {
+	
+  
+      if (tmp_val_list.empty()) {
             case_target_list.push_back(NULL);
             int_val_list.push_back(0);
             case_val_list.push_back(NULL);
