@@ -150,7 +150,7 @@ namespace {
 SanitizerCoverageOptions OverrideFromCL(SanitizerCoverageOptions Options) {
 
   Options.CoverageType = SanitizerCoverageOptions::SCK_Edge;
-  Options.NoPrune = true;
+  Options.NoPrune = false;
   Options.TracePCGuard = true;  // TracePCGuard is default.
   return Options;
 
