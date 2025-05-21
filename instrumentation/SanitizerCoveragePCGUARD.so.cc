@@ -1099,18 +1099,18 @@ void ModuleSanitizerCoverageAFL::instrumentFunction(
         for (auto i = SI->case_begin(), e = SI->case_end(); i != e;++i) {
           ConstantInt* op2 = dyn_cast<ConstantInt>(i->getCaseValue());
           BasicBlock* targetBB = i->getCaseSuccessor();
-          if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), &targetBB) == BlocksToInstrument.end()) {
-            if (shouldInstrumentBlockOptfuzz(F, &targetBB)) {
-              BlocksToInstrument.push_back(&targetBB);
+          if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), targetBB) == BlocksToInstrument.end()) {
+            if (shouldInstrumentBlockOptfuzz(F, targetBB)) {
+              BlocksToInstrument.push_back(targetBB);
             }
           }
         }
 
         // for default case
         BasicBlock* defaultBB = SI->getDefaultDest();
-        if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), &defaultBB) == BlocksToInstrument.end()) {
-          if (shouldInstrumentBlockOptfuzz(F, &defaultBB)) {
-            BlocksToInstrument.push_back(&defaultBB);
+        if (std::find(BlocksToInstrument.begin(), BlocksToInstrument.end(), defaultBB) == BlocksToInstrument.end()) {
+          if (shouldInstrumentBlockOptfuzz(F, defaultBB)) {
+            BlocksToInstrument.push_back(defaultBB);
           }
         } 
       }  
